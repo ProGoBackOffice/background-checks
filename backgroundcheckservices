@@ -1,0 +1,422 @@
+import { NotaryApplication, CheckResult, SSNValidationResult, DMVCheckResult } from '../types';
+
+// Configuration for different background check providers
+interface BackgroundCheckConfig {
+  federalProvider: 'fbi' | 'hireright' | 'sterling' | 'checkr';
+  stateProvider: 'state_api' | 'lexisnexis' | 'thomson_reuters';
+  ssnProvider: 'experian' | 'equifax' | 'lexisnexis';
+  dmvProvider: 'state_dmv' | 'verifications_inc';
+  sexOffenderProvider: 'nsopw' | 'state_registry';
+}
+
+class BackgroundCheckService {
+  private config: BackgroundCheckConfig;
+  private apiKeys: Record<string, string>;
+
+  constructor(config: BackgroundCheckConfig, apiKeys: Record<string, string>) {
+    this.config = config;
+    this.apiKeys = apiKeys;
+  }
+
+  // Federal Criminal Background Check
+  async performFederalCheck(applicantInfo: any): Promise<CheckResult> {
+    try {
+      switch (this.config.federalProvider) {
+        case 'hireright':
+          return await this.hireRightFederalCheck(applicantInfo);
+        case 'sterling':
+          return await this.sterlingFederalCheck(applicantInfo);
+        case 'checkr':
+          return await this.checkrFederalCheck(applicantInfo);
+        default:
+          throw new Error('Federal provider not configured');
+      }
+    } catch (error) {
+      console.error('Federal check failed:', error);
+      return {
+        status: 'failed',
+        details: 'Federal background check could not be completed'
+      };
+    }
+  }
+
+  // State Criminal Background Check
+  async performStateCheck(applicantInfo: any, state: string): Promise<CheckResult> {
+    try {
+      switch (this.config.stateProvider) {
+        case 'lexisnexis':
+          return await this.lexisNexisStateCheck(applicantInfo, state);
+        case 'thomson_reuters':
+          return await this.thomsonReutersStateCheck(applicantInfo, state);
+        default:
+          return await this.genericStateCheck(applicantInfo, state);
+      }
+    } catch (error) {
+      console.error('State check failed:', error);
+      return {
+        status: 'failed',
+        details: `State background check for ${state} could not be completed`
+      };
+    }
+  }
+
+  // SSN Validation
+  async validateSSN(ssn: string, personalInfo: any): Promise<SSNValidationResult> {
+    try {
+      switch (this.config.ssnProvider) {
+        case 'experian':
+          return await this.experianSSNValidation(ssn, personalInfo);
+        case 'equifax':
+          return await this.equifaxSSNValidation(ssn, personalInfo);
+        case 'lexisnexis':
+          return await this.lexisNexisSSNValidation(ssn, personalInfo);
+        default:
+          throw new Error('SSN provider not configured');
+      }
+    } catch (error) {
+      console.error('SSN validation failed:', error);
+      return {
+        status: 'failed',
+        isValid: false,
+        details: 'SSN validation could not be completed'
+      };
+    }
+  }
+
+  // DMV Records Check
+  async checkDMVRecords(licenseNumber: string, state: string): Promise<DMVCheckResult> {
+    try {
+      switch (this.config.dmvProvider) {
+        case 'state_dmv':
+          return await this.stateDMVCheck(licenseNumber, state);
+        case 'verifications_inc':
+          return await this.verificationsIncDMVCheck(licenseNumber, state);
+        default:
+          throw new Error('DMV provider not configured');
+      }
+    } catch (error) {
+      console.error('DMV check failed:', error);
+      return {
+        status: 'failed',
+        details: 'DMV records check could not be completed',
+        violations: [],
+        suspensions: []
+      };
+    }
+  }
+
+  // Sex Offender Registry Check
+  async checkSexOffenderRegistry(personalInfo: any): Promise<CheckResult> {
+    try {
+      // National Sex Offender Public Website (NSOPW) integration
+      return await this.nsopwCheck(personalInfo);
+    } catch (error) {
+      console.error('Sex offender registry check failed:', error);
+      return {
+        status: 'failed',
+        details: 'Sex offender registry check could not be completed'
+      };
+    }
+  }
+
+  // Provider-specific implementations
+  private async hireRightFederalCheck(applicantInfo: any): Promise<CheckResult> {
+    const response = await fetch('https://api.hireright.com/v1/screening/federal', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.hireright}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        firstName: applicantInfo.firstName,
+        lastName: applicantInfo.lastName,
+        ssn: applicantInfo.ssn,
+        dateOfBirth: applicantInfo.dateOfBirth
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.status === 'clear' ? 'clear' : 'flagged',
+      completedAt: new Date().toISOString(),
+      details: data.summary,
+      flags: data.records?.map((record: any) => ({
+        type: 'criminal',
+        severity: record.severity,
+        description: record.charge,
+        details: record.details,
+        date: record.date
+      })) || []
+    };
+  }
+
+  private async sterlingFederalCheck(applicantInfo: any): Promise<CheckResult> {
+    // Sterling Talent Solutions API integration
+    const response = await fetch('https://api.sterlingcheck.com/v2/screenings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.sterling}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        candidate: {
+          firstName: applicantInfo.firstName,
+          lastName: applicantInfo.lastName,
+          ssn: applicantInfo.ssn,
+          dateOfBirth: applicantInfo.dateOfBirth
+        },
+        screeningType: 'federal_criminal'
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.overallStatus,
+      completedAt: data.completedDate,
+      details: data.summary
+    };
+  }
+
+  private async checkrFederalCheck(applicantInfo: any): Promise<CheckResult> {
+    // Checkr API integration
+    const response = await fetch('https://api.checkr.com/v1/reports', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.checkr}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        type: 'federal_criminal_search',
+        candidate_id: applicantInfo.candidateId
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.status,
+      completedAt: data.completed_at,
+      details: data.result
+    };
+  }
+
+  private async lexisNexisStateCheck(applicantInfo: any, state: string): Promise<CheckResult> {
+    // LexisNexis Risk Solutions API
+    const response = await fetch('https://api.lexisnexis.com/risk/screening/v1/state-criminal', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.lexisnexis}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        subject: {
+          firstName: applicantInfo.firstName,
+          lastName: applicantInfo.lastName,
+          ssn: applicantInfo.ssn,
+          dateOfBirth: applicantInfo.dateOfBirth
+        },
+        searchCriteria: {
+          state: state,
+          searchType: 'comprehensive'
+        }
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.status,
+      completedAt: data.completedAt,
+      details: data.summary
+    };
+  }
+
+  private async experianSSNValidation(ssn: string, personalInfo: any): Promise<SSNValidationResult> {
+    // Experian Data Quality API
+    const response = await fetch('https://api.experian.com/identity/v1/ssn-validation', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.experian}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        ssn: ssn,
+        firstName: personalInfo.firstName,
+        lastName: personalInfo.lastName,
+        dateOfBirth: personalInfo.dateOfBirth
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.isValid ? 'clear' : 'flagged',
+      completedAt: new Date().toISOString(),
+      isValid: data.isValid,
+      issuedState: data.issuedState,
+      issuedYear: data.issuedYear,
+      deathMasterFile: data.deathMasterFileMatch,
+      details: data.validationSummary
+    };
+  }
+
+  private async stateDMVCheck(licenseNumber: string, state: string): Promise<DMVCheckResult> {
+    // State-specific DMV API (varies by state)
+    const stateApiUrl = this.getStateDMVApiUrl(state);
+    
+    const response = await fetch(`${stateApiUrl}/driver-record`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys[`dmv_${state.toLowerCase()}`]}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        licenseNumber: licenseNumber,
+        state: state
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.violations.length > 0 ? 'flagged' : 'clear',
+      completedAt: new Date().toISOString(),
+      violations: data.violations,
+      suspensions: data.suspensions,
+      restrictions: data.restrictions,
+      details: data.summary
+    };
+  }
+
+  private async nsopwCheck(personalInfo: any): Promise<CheckResult> {
+    // National Sex Offender Public Website integration
+    // Note: This requires special authorization and compliance
+    const response = await fetch('https://api.nsopw.gov/v1/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.apiKeys.nsopw}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        firstName: personalInfo.firstName,
+        lastName: personalInfo.lastName,
+        dateOfBirth: personalInfo.dateOfBirth
+      })
+    });
+
+    const data = await response.json();
+    
+    return {
+      status: data.matches.length > 0 ? 'flagged' : 'clear',
+      completedAt: new Date().toISOString(),
+      details: data.matches.length > 0 ? 'Matches found in registry' : 'No matches found'
+    };
+  }
+
+  private getStateDMVApiUrl(state: string): string {
+    // Each state has different DMV API endpoints
+    const stateUrls: Record<string, string> = {
+      'TX': 'https://api.txdmv.gov',
+      'CA': 'https://api.dmv.ca.gov',
+      'FL': 'https://api.flhsmv.gov',
+      // Add more states as needed
+    };
+    
+    return stateUrls[state] || 'https://api.generic-dmv.com';
+  }
+
+  // Comprehensive background check orchestrator
+  async performCompleteBackgroundCheck(application: NotaryApplication): Promise<NotaryApplication> {
+    const updatedApplication = { ...application };
+    
+    try {
+      // Run all checks in parallel for efficiency
+      const [federalCheck, stateCheck, ssnValidation, sexOffenderCheck, dmvCheck] = await Promise.all([
+        this.performFederalCheck(application.applicantInfo),
+        this.performStateCheck(application.applicantInfo, application.applicantInfo.address.state),
+        this.validateSSN(application.applicantInfo.ssn, application.applicantInfo),
+        this.checkSexOffenderRegistry(application.applicantInfo),
+        application.applicantInfo.driverLicenseNumber ? 
+          this.checkDMVRecords(application.applicantInfo.driverLicenseNumber, application.applicantInfo.driverLicenseState!) :
+          Promise.resolve({ status: 'clear' as const, violations: [], suspensions: [], details: 'No driver license provided' })
+      ]);
+
+      // Update application with results
+      updatedApplication.checks = {
+        federalCheck,
+        stateCheck,
+        ssnValidation,
+        sexOffenderRegistry: sexOffenderCheck,
+        dmvRecords: dmvCheck
+      };
+
+      // Calculate risk rating based on results
+      updatedApplication.rating = this.calculateRiskRating(updatedApplication.checks);
+      
+      // Update status based on results
+      updatedApplication.status = this.determineApplicationStatus(updatedApplication);
+      
+      return updatedApplication;
+    } catch (error) {
+      console.error('Background check failed:', error);
+      updatedApplication.status = 'pending_review';
+      return updatedApplication;
+    }
+  }
+
+  private calculateRiskRating(checks: any): any {
+    // Risk calculation logic based on check results
+    let totalScore = 0;
+    const factors = [];
+
+    // Criminal history factor (40% weight)
+    const criminalScore = (checks.federalCheck.status === 'clear' && checks.stateCheck.status === 'clear') ? 100 : 
+                         (checks.federalCheck.flags?.length || 0) > 0 ? 50 : 75;
+    factors.push({
+      category: 'Criminal History',
+      score: criminalScore,
+      weight: 0.4,
+      impact: criminalScore >= 80 ? 'positive' : 'negative',
+      description: criminalScore === 100 ? 'Clean criminal background' : 'Criminal history found'
+    });
+
+    // Identity verification factor (20% weight)
+    const identityScore = checks.ssnValidation.isValid ? 95 : 60;
+    factors.push({
+      category: 'Identity Verification',
+      score: identityScore,
+      weight: 0.2,
+      impact: identityScore >= 80 ? 'positive' : 'negative',
+      description: checks.ssnValidation.isValid ? 'Strong identity verification' : 'Identity verification issues'
+    });
+
+    // Calculate weighted total
+    totalScore = factors.reduce((sum, factor) => sum + (factor.score * factor.weight), 0);
+
+    const riskLevel = totalScore >= 85 ? 'low' : totalScore >= 70 ? 'medium' : totalScore >= 50 ? 'high' : 'critical';
+    const recommendation = totalScore >= 85 ? 'approve' : totalScore >= 70 ? 'conditional' : 'deny';
+
+    return {
+      overallScore: Math.round(totalScore),
+      riskLevel,
+      recommendation,
+      factors
+    };
+  }
+
+  private determineApplicationStatus(application: NotaryApplication): any {
+    const { rating, checks } = application;
+    
+    if (rating.recommendation === 'approve') {
+      return 'approved';
+    } else if (rating.recommendation === 'conditional') {
+      return 'pending_review';
+    } else {
+      return 'denied';
+    }
+  }
+}
+
+export default BackgroundCheckService;
